@@ -1,4 +1,5 @@
 import numpy as np
+import copy
 
 class InvalidMove(Exception):
     pass
@@ -59,6 +60,14 @@ class Board:
         self.w_captured = []
         self.b_captured = []
 
+    def clone(self, cache=None):
+        if cache is None:
+            board = copy.deepcopy(self)
+            return board
+        else:
+            cache.board[:, :] = self.board[:, :]  # note this ignores the captures
+            return cache
+
     def print_raw(self):
         print(self.board)
 
@@ -86,13 +95,15 @@ class Board:
         except KeyError:
             raise ConversionError('Cannot convert coordinates {} to ij'.format(columnrow))
 
-    def move_actual(self, i, j, I, J, actions, comments, color):
+    def move_actual(self, i, j, I, J, actions, comments=None, color=None):
+        if color is None:
+            color = self.get_color(i, j)
         winner = self.NIL
         comment = []
         if (i, j, I, J) in actions:
             # Ok move, execute
             tgt_color = self.get_color(I, J)
-            comment.append('Moving {}: {}->{} // {}'.format(self.to_unicode(self.board[i][j]), self.to_coord(i,j), self.to_coord(I,J), comments[(i, j, I, J)]))
+            if comments is not None: comment.append('Moving {}: {}->{} // {}'.format(self.to_unicode(self.board[i][j]), self.to_coord(i,j), self.to_coord(I,J), comments.get((i, j, I, J), 'OK')))
             if tgt_color == self.opposite(color):
                 # Is a capture
                 comment.append('Captured {}'.format(self.to_unicode(self.board[I][J])))   
@@ -100,12 +111,12 @@ class Board:
                     self.w_captured.append(self.board[I][J])
                     if self.board[I][J] == self.W_KING:
                         winner = self.BLACK
-                        comment.append('BLACK WINS')
+                        if comments is not None: comment.append('BLACK WINS')
                 elif tgt_color == self.BLACK:
                     self.b_captured.append(self.board[I][J])
                     if self.board[I][J] == self.B_KING:
                         winner = self.WHITE
-                        comment.append('WHITE WINS')
+                        if comments is not None: comment.append('WHITE WINS')
             elif tgt_color == color:
                 raise Exception('This should never happen')     
             # Update target and clear source
@@ -118,8 +129,8 @@ class Board:
 
     def move(self, i, j, I, J):
         # Identify piece
-        actions, comments, color = self.get_actions(i, j)
-        return self.move_actual(i, j, I, J, actions, comments, color)
+        actions, comments = self.get_actions(i, j)
+        return self.move_actual(i, j, I, J, actions, comments)
 
     def opposite(self, color):
         if color == self.WHITE:
@@ -131,7 +142,18 @@ class Board:
         else:
             raise Exception('Opposite color only makes sense for WHITES BLACKS and NIL')
 
-    def get_actions(self, i, j):
+    def get_all_actions(self, self_color, enable_comments=False):
+        assert self_color in (self.BLACK, self.WHITE)
+        # Find all pieces of color
+        all_actions = []
+        for i in range(8):
+            for j in range(8):
+                if self.get_color(i, j) == self_color:
+                    actions, __ = self.get_actions(i, j, enable_comments)
+                    all_actions.append(actions)
+        return sum(all_actions, [])  # append all lists together
+
+    def get_actions(self, i, j, enable_comments=False):
         '''
         EN PASSANT not implemented
         CASTLING not implemented
@@ -149,44 +171,48 @@ class Board:
             fwd = -1 if color == self.WHITE else 1
             # Advance twice
             I, J = i+2*fwd, j 
+            intI, intJ = i+1*fwd, j
             # this logic should make sense because pawns cannot move backwards
             if (color == self.WHITE and i == self.ROW2i['2']) or (color == self.BLACK and i == self.ROW2i['7']):
-                actions.append((i, j, I, J))
-                comments[(i, j, I, J)] = 'PAWN advances for two-squares'
+                if self.board[I][J] == self.NIL and self.board[intI][intJ] == self.NIL:
+                    actions.append((i, j, I, J))
+                    if enable_comments: comments[(i, j, I, J)] = 'PAWN 2-advances to free cell'
+                else:
+                    if enable_comments: comments[(i, j, I, J)] = 'PAWN is blocked and cannot 2-advance'                    
             else:
-                comments[(i, j, I, J)] = 'PAWN cannot advance for two-squares because it has moved before'
+                if enable_comments: comments[(i, j, I, J)] = 'PAWN cannot 2-advance because it has moved before'
             # Advance once 
             I, J = i+fwd, j
             if self.in_limits(I, J):
                 if self.get_color(I, J) == self.NIL:
                     actions.append((i, j, I, J))
-                    comments[(i, j, I, J)] = 'PAWN advances to free space'
+                    if enable_comments: comments[(i, j, I, J)] = 'PAWN advances to free cell'
                 else:
-                    comments[(i, j, I, J)] = 'PAWN is blocked from advancing'
+                    if enable_comments: comments[(i, j, I, J)] = 'PAWN is blocked and cannot advance one cell'
             # Move diagonally
             for I, J in [(i+fwd, j-1), (i+fwd, j+1)]:
                 if self.in_limits(I, J):
                     tgt_color = self.get_color(I, J)
                     if tgt_color == color:
-                        comments[(i, j, I, J)] = 'PAWN cannot capture own color'
+                        if enable_comments: comments[(i, j, I, J)] = 'PAWN cannot capture own color'
                     elif tgt_color == self.NIL:
-                        comments[(i, j, I, J)] = 'PAWN cannot capture empty cell'
+                        if enable_comments: comments[(i, j, I, J)] = 'PAWN cannot capture empty cell'
                     else:
                         actions.append((i, j, I, J))
-                        comments[(i, j, I, J)] = 'PAWN captures diagonally'
+                        if enable_comments: comments[(i, j, I, J)] = 'PAWN captures diagonally'
         # Is a KNIGHT
         elif self.board[i][j] in (self.W_KNIGHT, self.B_KNIGHT):
             for I, J in [(i+2, j+1), (i+2, j-1), (i-2, j+1), (i-2, j-1), (i+1, j+2), (i+1, j-2), (i-1, j+2), (i-1, j-2)]:
                 if self.in_limits(I, J):
                     tgt_color = self.get_color(I, J)
                     if tgt_color == color:
-                        comments[(i, j, I, J)] = 'KNIGHT cannot capture own color'
+                        if enable_comments: comments[(i, j, I, J)] = 'KNIGHT cannot capture own color'
                     elif tgt_color == self.NIL:
                         actions.append((i, j, I, J))
-                        comments[(i, j, I, J)] = 'KNIGHT jumps to free space'
+                        if enable_comments: comments[(i, j, I, J)] = 'KNIGHT jumps to free space'
                     else:
                         actions.append((i, j, I, J))
-                        comments[(i, j, I, J)] = 'KNIGHT captures adversary'
+                        if enable_comments: comments[(i, j, I, J)] = 'KNIGHT captures adversary'
         # Is a BISHOP
         elif self.board[i][j] in (self.W_BISHOP, self.B_BISHOP):
             # Explore each diagonal from 1 to 7 steps
@@ -198,14 +224,14 @@ class Board:
                         break
                     tgt_color = self.get_color(I, J)
                     if tgt_color == color:
-                        comments[(i, j, I, J)] = 'BISHOP cannot capture own color'
+                        if enable_comments: comments[(i, j, I, J)] = 'BISHOP cannot capture own color'
                         break
                     elif tgt_color == self.NIL:
                         actions.append((i, j, I, J))
-                        comments[(i, j, I, J)] = 'BISHOP slides to free space'
+                        if enable_comments: comments[(i, j, I, J)] = 'BISHOP slides to free space'
                     else:
                         actions.append((i, j, I, J))
-                        comments[(i, j, I, J)] = 'BISHOP captures adversary'
+                        if enable_comments: comments[(i, j, I, J)] = 'BISHOP captures adversary'
                         break
         # Is a ROOK
         elif self.board[i][j] in (self.W_ROOK, self.B_ROOK):
@@ -218,14 +244,14 @@ class Board:
                         break
                     tgt_color = self.get_color(I, J)
                     if tgt_color == color:
-                        comments[(i, j, I, J)] = 'ROOK cannot capture own color'
+                        if enable_comments: comments[(i, j, I, J)] = 'ROOK cannot capture own color'
                         break
                     elif tgt_color == self.NIL:
                         actions.append((i, j, I, J))
-                        comments[(i, j, I, J)] = 'ROOK slides to free space'
+                        if enable_comments: comments[(i, j, I, J)] = 'ROOK slides to free space'
                     else:
                         actions.append((i, j, I, J))
-                        comments[(i, j, I, J)] = 'ROOK captures adversary'  
+                        if enable_comments: comments[(i, j, I, J)] = 'ROOK captures adversary'  
                         break
         # Is a QUEEN     
         elif self.board[i][j] in (self.W_QUEEN, self.B_QUEEN):
@@ -238,14 +264,14 @@ class Board:
                         break
                     tgt_color = self.get_color(I, J)
                     if tgt_color == color:
-                        comments[(i, j, I, J)] = 'QUEEN cannot capture own color'
+                        if enable_comments: comments[(i, j, I, J)] = 'QUEEN cannot capture own color'
                         break
                     elif tgt_color == self.NIL:
                         actions.append((i, j, I, J))
-                        comments[(i, j, I, J)] = 'QUEEN slides to free space'
+                        if enable_comments: comments[(i, j, I, J)] = 'QUEEN slides to free space'
                     else:
                         actions.append((i, j, I, J))
-                        comments[(i, j, I, J)] = 'QUEEN captures adversary'  
+                        if enable_comments: comments[(i, j, I, J)] = 'QUEEN captures adversary'  
                         break
         # Is a KING     
         elif self.board[i][j] in (self.W_KING, self.B_KING):
@@ -258,27 +284,27 @@ class Board:
                     continue
                 tgt_color = self.get_color(I, J)
                 if tgt_color == color:
-                    comments[(i, j, I, J)] = 'KING cannot capture own color'
+                    if enable_comments: comments[(i, j, I, J)] = 'KING cannot capture own color'
                 elif tgt_color == self.NIL:
                     actions.append((i, j, I, J))
-                    comments[(i, j, I, J)] = 'KING slides to free space'
+                    if enable_comments: comments[(i, j, I, J)] = 'KING slides to free space'
                 else:
                     actions.append((i, j, I, J))
-                    comments[(i, j, I, J)] = 'KING captures adversary'  
+                    if enable_comments: comments[(i, j, I, J)] = 'KING captures adversary'  
 
-        return actions, comments, color
+        return actions, comments
 
     def in_limits(self, i, j):
         return 0 <= i <= 7 and 0 <= j <= 7
     
-
     def get_color(self, i, j):
-        if self.board[i][j] == self.NIL:
-            return self.NIL
-        elif self.board[i][j] in self.BLACK_PIECES:
+        v = self.board[i][j]
+        if v >= self.BLACK:
             return self.BLACK
-        elif self.board[i][j] in self.WHITE_PIECES:
-            return self.WHITE
+        elif v >= self.WHITE:
+            return self.WHITE 
+        elif v == self.NIL:
+            return self.NIL
         else:
             raise Exception('Invalid value at cell ({},{}): {}'.format(i, j, self.board[i][j]))
 
@@ -290,7 +316,7 @@ class Board:
         if len(coord) != 2:
             raise ValueError('Bad move string')
         i, j = self.to_ij(coord)
-        actions, comments, color = self.get_actions(i, j)
+        actions, comments = self.get_actions(i, j)
         possible_dst = set([(I, J) for i, j, I, J in actions])
         return self.__str__(src=[(i, j)],dst=possible_dst)
 
@@ -352,45 +378,81 @@ class Board:
         else:
             raise Exception('Bad piece')
         
-        
+    def play(board, buffer):
+        return board.play_interactive(buffer, interactive=False)
 
-def play_interactive(buffer=''):
-    board = Board()
-    print(board)
-    while True:
-        # Preprocess buffer
-        if buffer != '':
-            buffer = buffer.strip(' \n')
-            tokens = buffer.split()
-            if len(tokens) == 0:
-                continue
-            move_or_ij, buffer = tokens[0], ' '.join(tokens[1:])
-            print('\n? {}'.format(move_or_ij))
-        else:
-            buffer = input('(buffer) ')
-            continue
+    def pretty_action(self, i, j, I, J):
+        return '{}->{}'.format(self.to_coord(i,j), self.to_coord(I, J))
 
-        try:
-            if len(move_or_ij) == 4:
-                winner, comment = board.move_str(move_or_ij)
-                print(comment)
-                print(board)
-                if winner != board.NIL:
-                    break
-            elif len(move_or_ij) == 2:
-                print('Possible moves for {}\n{}'.format(move_or_ij, board.pretty_actions_at_coord(move_or_ij)))
+    def self_play(self, closure, self_color=None):
+        '''
+        closure(board, self_color) -> action
+        '''
+        if self_color is None:
+            self_color = self.WHITE
+        color = self_color
+        for ply in range(1000):
+            print(self)
+            print('\nPly {}: Playing as {}'.format(ply, 'WHITE' if color == self.WHITE else 'BLACK'))
+            score, action, n_evals = closure(self, color)
+            i, j, I, J = action
+            assert self.get_color(i, j) == color
+            print('Taking {} for score {} ({} evaluations)'.format(self.pretty_action(i, j, I, J), score, n_evals))
+            winner, comments = self.move(i, j, I, J)
+            if winner != self.NIL:
+                print(comments)
+                break
+            print(comments)
+            color = self.opposite(color)
+        print(self)
+
+    def play_interactive(board, buffer='', interactive=True, hooks=None):
+        if hooks is None:
+            hooks = []
+        print(board)
+        for hook in hooks:
+            hook(board)
+        while True:
+            # Preprocess buffer
+            if buffer != '':
+                buffer = buffer.strip(' \n')
+                tokens = buffer.split()
+                if len(tokens) == 0:
+                    continue
+                move_or_ij, buffer = tokens[0], ' '.join(tokens[1:])
+                print('\n? {}'.format(move_or_ij))
             else:
-                print('Please enter a move (e.g. "g2f2") or a coordinate (e.g. "h1")')
-        except InvalidMove as e:
-                    print('InvalidMove "{}": {}'.format(move_or_ij, e))            
-        except ConversionError as e:
-                    print('ConversionError: {}'.format(e))
-              
+                if interactive:
+                    try:
+                        buffer = input('(buffer) ')
+                        continue
+                    except EOFError:
+                        break
+                else:
+                    break
+            try:
+                if len(move_or_ij) == 4:
+                    winner, comment = board.move_str(move_or_ij)
+                    print(comment)
+                    print(board)
+                    for hook in hooks:
+                        hook(board)
+                    if winner != board.NIL:
+                        break
+                elif len(move_or_ij) == 2:
+                    print('Possible moves for {}\n{}'.format(move_or_ij, board.pretty_actions_at_coord(move_or_ij)))
+                else:
+                    print('Please enter a move (e.g. "g2f2") or a coordinate (e.g. "h1")')
+            except InvalidMove as e:
+                        print('InvalidMove "{}": {}'.format(move_or_ij, e))            
+            except ConversionError as e:
+                        print('ConversionError: {}'.format(e))
+        return board
 
 
 
 if __name__ == '__main__':
-    #play_interactive('a2a3 a3a4 a1a3 a3h3 b2b3 d2d3 f1f2 f2f3 f3f4 d3d4 e2e3 e3e4 e4e5 g1 c1 b1 g1 e1')  # bunch of tests
-    #play_interactive('a2a3 a3 b2')  # pawn advance
-    #play_interactive('e2e3 d1f3 f3f7 f7e8')  # white wins
-    play_interactive('b8c6 c6d4 d4f3 f3e1')  # black wins
+    #Board().play_interactive('a2a3 a3a4 a1a3 a3h3 b2b3 d2d3 f1f2 f2f3 f3f4 d3d4 e2e3 e3e4 e4e5 g1 c1 b1 g1 e1')  # bunch of tests
+    Board().play_interactive('a2a3 a3 b2')  # pawn advance
+    #Board().play_interactive('e2e3 d1f3 f3f7 f7e8')  # white wins
+    #Board().play_interactive('b8c6 c6d4 d4f3 f3e1')  # black wins
